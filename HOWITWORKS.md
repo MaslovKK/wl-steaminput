@@ -14,8 +14,9 @@ flowchart LR
     C --> I[Steam Input stays bound to the game]
 ```
 
-Build notes: use RelWithDebInfo or Release — Dobby switches its own logging on
-for `Debug` and dumps every hook's relocated instructions into the trace.
+Build notes: no build type is prescribed; the only caveat is that plain `Debug`
+switches Dobby's own logging on and dumps every hook's relocated instructions
+into the trace.
 
 ## Why the client never learns
 

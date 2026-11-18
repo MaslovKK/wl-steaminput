@@ -5,7 +5,7 @@ before touching `src/steam/client.cpp`.
 
 # Build and checks
 
-    cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    cmake -B build
     cmake --build build -j
     clang-format --dry-run -Werror src/*/*.cpp src/*/*.h
 

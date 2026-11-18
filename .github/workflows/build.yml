@@ -15,7 +15,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libwayland-dev
 
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        run: cmake -B build -G Ninja
 
       - name: Build
         run: cmake --build build -j

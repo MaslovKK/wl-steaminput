@@ -12,7 +12,7 @@ problem, and it is fixable with one launch option.
 
 1. Build the shim:
 
-       cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+       cmake -B build
        cmake --build build -j
 
    The result is `build/libwlsteaminput.so`.
@@ -65,8 +65,6 @@ practice:
 - **Play Wayland**: controller works through this shim, overlay does not — on
   any setup except a full gamescope session, where the compositor implements
   the overlay itself.
-
-Controller or overlay, pick per game; both are one launch option away.
 
 ## How it works
 
