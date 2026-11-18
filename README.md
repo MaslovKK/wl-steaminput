@@ -43,6 +43,15 @@ The game's log is `~/.local/share/Steam/logs/console-linux.txt`: a
 error; a `SetFocusedWindow(...)` line is a focus report actually delivered.
 [Reading the trace](HOWITWORKS.md#reading-the-trace) explains every line.
 
+## Games with anti-cheat
+
+The fix works by living inside the game process and hooking its library loader —
+which is precisely what third-party anti-cheat looks at. Single-player and
+co-op games are fine; nothing reads the process but Steam. In online games with
+Easy Anti-Cheat, BattlEye or similar, an unexpected preloaded library in the
+game can be flagged or is against the terms — if the account matters, leave
+those games alone; they also tend to run X11 and need no help anyway.
+
 ## The overlay (Shift+Tab)
 
 Not this shim's business, and it cannot be: the overlay needs an X11 window
