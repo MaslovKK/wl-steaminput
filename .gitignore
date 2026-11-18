@@ -1,0 +1,5 @@
+build/
+cmake-build-debug/
+steamrt64-steamclient.so
+steamrt64-steamclient.so.*
+.idea/
