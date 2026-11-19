@@ -1,113 +1,74 @@
-# How wl-steaminput works
+# How `wl-steaminput` Works
 
-The player-facing version is the README. This is the machinery: what the client
-does with a focus report, where the shim finds it, and what every trace line
-means.
+For setup and usage instructions, see the [README](README.md). This document covers the internal architecture: how the Steam client handles window focus, how the shim hooks Wayland and Steamworks at runtime, and how to interpret trace logs.
 
 ```mermaid
 flowchart LR
-    W[Wayland compositor] -- "xdg_toplevel configure" --> H[shim's listener chain]
-    D[game dlopens steamclient.so] --> R[pattern scan]
-    H --> F[focus change]
+    W[Wayland Compositor] -- "xdg_toplevel::configure" --> H[Shim Listener Chain]
+    D[Game dlopens steamclient.so] --> R[Byte-Pattern Scanner]
+    H --> F[Focus State Change]
     R --> F
-    F -- "SetFocusedWindow over the game's own pipe" --> C[Steam client]
-    C --> I[Steam Input stays bound to the game]
+    F -- "SetFocusedWindow over game IPC pipe" --> C[Steam Client]
+    C --> I[Steam Input remains bound to game]
+
 ```
 
-Build notes: no build type is prescribed; the only caveat is that plain `Debug`
-switches Dobby's own logging on and dumps every hook's relocated instructions
-into the trace.
+> **Build Note:** No specific CMake build type is required. However, building with plain `Debug` enables Dobby's internal logging, which dumps every hook's relocated assembly instructions into the trace output.
 
-## Why the client never learns
+---
 
-Steam Input decides what an action bound to, say, the pad right trigger does by
-looking at the focused app in the client. That field is written by
-`IClientUtils::SetFocusedWindow`, which the overlay renderer normally reports
-over the game's own pipe. The renderer is a virtual X server, so a game on
-Wayland — natively or through Wine's Wayland driver — never talks to it, the
-client keeps the desktop bound, and the button actuates KDE instead of the game.
-Rendering and haptics are unaffected; only that focus binding is missing.
+## Why the Steam Client Never Learns About Focus
 
+Steam Input determines which controller profile to apply (for example, what the right trigger does) by checking which application currently has focus inside the Steam client.
 
-## How the shim works
+Normally, that internal focus field is updated via `IClientUtils::SetFocusedWindow`, which the Steam Overlay renderer sends over the game's dedicated IPC pipe. Because the overlay renderer operates as a virtual X11 server, games running purely on Wayland—either natively or via `PROTON_USE_WAYLAND=1`—never communicate with it. Consequently, Steam assumes the desktop remains focused, and controller inputs actuate your desktop environment (e.g., KDE or GNOME) instead of the game.
 
-Nothing worth hooking exists when the shim is loaded: games dlopen wayland (SDL3,
-Wine's `winewayland.so`) when the first window appears and the client library
-when they initialise Steamworks. So the shim hooks `dlopen` and retries both
-halves after every load, which also means it links against nothing but libc,
-libdl and Dobby.
+Controller rendering, raw input, and haptics are unaffected; only this focus-binding link is missing.
 
-<details>
-<summary>Focus</summary>
+---
 
-Comes from the game's own `xdg_toplevel`: `wl_proxy_add_listener` is chained, and
-every `configure` carries the whole window state, so the presence or absence of
-`XDG_TOPLEVEL_STATE_ACTIVATED` says focused or not, repeatably and in any event
-order. A toplevel destroyed while activated is a focus loss the compositor
-promises no event for, so `wl_proxy_destroy` is hooked and retires it. Works for
-a native Wayland game and for a Proton game on `PROTON_USE_WAYLAND=1`, where it
-is Wine holding the window; every copy of libwayland in the process (the game's,
-a layer's) is hooked through its own symbol table, because `dlsym` would answer
-for only one.
-</details>
+## Architecture & Hooking Lifecycle
 
-<details>
-<summary>The report</summary>
+When `LD_PRELOAD` injects `wl-steaminput` at process startup, neither Wayland nor Steamworks has been loaded yet: games `dlopen` `libwayland-client` (via SDL3 or Wine's `winewayland.so`) when creating their first window, and `steamclient.so` when initializing Steamworks.
 
-Goes through `steamclient.so`, which both kinds of game have mapped — native
-through `libsteam_api.so`, Proton through Wine's `lsteamclient.so`, which loads
-the client's own `sdk64` copy (hence the exact-basename match: the wrapper's name
-ends with the client's). The client keeps a table of generated call senders; each
-entry marshals one call's arguments and sends them over a pipe by interface and
-method name. A call is made through a 32-byte context naming that table, the pipe
-and the connection, built by the client's own builder.
+To handle this, the shim hooks `dlopen` and re-runs initialization for both halves after every library load. Because everything is resolved dynamically at runtime, the binary links only against `libc`, `libdl`, and `Dobby`.
 
-The pipe must be the game's own, and one cannot simply be opened: the client
-answers that request by asking the game's IPC server for a pipe slot, and that
-server has none — it takes the request with a null dereference. So the pipes this
-process already has are read off the client's connection object, and the client's
-own language call picks the game's pipe: only the real client answers it. (The
-overlay renderer's pipe is a candidate like any other, and will answer for the
-wrong app.)
-</details>
+### 1. Capturing Window Focus (Wayland)
 
-<details>
-<summary>Surviving client updates</summary>
+* **Listener Chaining:** The shim intercepts `wl_proxy_add_listener` on the game's `xdg_toplevel` surface. Every `xdg_toplevel::configure` event delivers the complete state array of the window; the presence or absence of `XDG_TOPLEVEL_STATE_ACTIVATED` reliably determines focus regardless of event ordering.
+* **Window Destruction:** Because Wayland compositors do not emit an unfocus event when an active window is destroyed, the shim also hooks `wl_proxy_destroy` to cleanly clear focus when a toplevel closes.
+* **Multi-Instance Support:** This works identically for native Wayland games and Proton (`PROTON_USE_WAYLAND=1`, where Wine owns the surface). Rather than relying on `dlsym`—which only resolves the first symbol in load order—the shim inspects each loaded `libwayland-client` instance's own symbol table, ensuring hooks attach even if a game or Vulkan layer bundles its own copy.
 
-Positions in an interface's call table and the layout of the runtime objects are
-the only numbers the shim hardcodes; everything else is found by byte patterns,
-checked unique (or made unique by a predicate that says why), and verified inside
-the library's own mappings before anything is read or called. Each pattern tries
-the linux64 branch's shape first and the Steam Runtime branch's second — the two
-differ in codegen only; the call table, the context layout and even the assert
-inside the pipe validity check are identical. A client that moved something is a
-`waiting for the client` log line, never a jump into data. Nothing is called
-until the first focus change, and the first call is the language call, which both
-picks the pipe and proves the client answers over it.
-</details>
+### 2. Sending the Focus Report (Steam IPC)
 
+* **Client Library Matching:** Both native games (via `libsteam_api.so`) and Proton games (via Wine's `lsteamclient.so`) map Valve's `steamclient.so` into memory. The shim matches the exact basename (`steamclient.so`) to avoid hooking Wine's wrapper.
+* **Marshaling the Call:** Inside `steamclient.so`, Valve maintains a table of generated IPC call senders that marshal arguments by interface and method name. The shim invokes `SetFocusedWindow` using a 32-byte call context (referencing the sender table, pipe, and connection) constructed via the client's own internal builder.
+* **Pipe Discovery:** The call must travel over the game's existing IPC pipe. Opening a new pipe is impossible because the client fulfills that request by querying the game's local IPC server for a slot—which does not exist, triggering a null-pointer dereference. Instead, the shim enumerates the open pipes already attached to the client's connection object and probes each one using Steam's internal language-query call. Decoy pipes (such as the overlay renderer's) do answer the probe, but for a different app id; the game's own pipe is the one that answers for the game.
 
-## Reading the trace
+### 3. Surviving Steam Client Updates
 
-| Line | Meaning |
-|---|---|
-| `hooked dlopen` | the shim is in; both halves below appear as the game loads them |
-| `wayland hooked, client resolved` | per-half progress after each `dlopen` |
-| `waiting for the client: <reason>` | not fatal, repeated at the next focus change; `no SteamAppId`, `not mapped`, `senders are not in`, `not the layout`, `no connection`, `no pipe` name the missing piece |
-| `<N> pipes` / `pipe N, links N/N, state N, language ...` | the client's own pipe inventory for this process, tried one by one |
-| `reporting over pipe N, app id N` | the pipe the client answered a real call on |
-| `toplevel activated/deactivated, size WxH` | every focus transition of every game window |
-| `SetFocusedWindow(N) over pipe P` | the report itself: the game's id while any of its windows is activated, 413080 — the desktop's own Steam Input configuration — when none is |
+The only hardcoded constants in `wl-steaminput` are interface call-table indices and internal struct layouts. All function entry points and globals are located via **byte-pattern scanning**:
 
-<details>
-<summary>Why 413080 and not "nothing focused"</summary>
+* Every pattern is verified to be unique (or disambiguated by a targeted predicate) and bounds-checked against the library's mapped memory segments before reading or executing.
+* Each scan checks the standard `linux64` binary layout first, falling back to the Steam Runtime build layout. While compiler codegen differs slightly between the two, the call tables, 32-byte context layout, and pipe validation logic remain identical.
+* **Fail-Safe Behavior:** If a future Steam update alters a signature, the shim logs a `waiting for the client` message and becomes a safe no-op rather than jumping into invalid memory. No client functions are invoked until the first real focus transition occurs, at which point the language probe simultaneously selects the valid pipe and verifies IPC responsiveness.
 
-The client's focus receiver settles an unfocus on its internal desktop app id
-202355, but a report of that id activates it as itself, which suspends input
-polling — the controller goes dead until the client's own fallback lands the
-configuration app seconds later, which is the mode flapping this whole shim
-exists to avoid. Reporting the configuration app directly lands the unfocus on
-the same state the X11 path ends in, in one call. The id is not hardcoded: it is
-read from the client's own internal-app comparison.
-</details>
+---
 
+## Reading the Trace Log
+
+When running with `WLSTEAMINPUT_DEBUG=1`, the shim writes diagnostic lines to `~/.local/share/Steam/logs/console-linux.txt`:
+
+| Trace Line | Meaning |
+| --- | --- |
+| `hooked dlopen` | The shim initialized and is watching dynamic library loads for Wayland and `steamclient.so`. |
+| `wayland hooked, client resolved` | Status update emitted after each `dlopen` showing which half of the bridge is ready. |
+| `waiting for the client: <reason>` | Non-fatal status retried on the next focus event. Reasons (`no SteamAppId`, `not mapped`, `senders are not in`, `not the layout`, `no connection`, `no pipe`) indicate which prerequisite is still missing. |
+| `<N> pipes` / `pipe N, links N/N, state N, language ...` | Lists every open pipe found on the client connection as the shim probes them to find the active Steam client pipe. |
+| `reporting over pipe N, app id N` | Confirms which pipe answered the language probe and will be used for focus reporting. |
+| `toplevel activated/deactivated, size WxH` | Emitted whenever any game window gains or loses compositor focus. |
+| `SetFocusedWindow(N) over pipe P` | The actual IPC focus report sent to Steam: reports the game's AppID when a window is active, or `413080` (Steam's desktop controller configuration AppID) when unfocused. |
+
+Internally, Steam's focus receiver maps an unfocused state to its internal desktop AppID (`202355`). However, explicitly reporting `202355` over IPC causes Steam to activate that internal app directly, which suspends controller polling entirely. The controller goes completely dead for several seconds until Steam's fallback timer transitions into the desktop configuration profile—causing the exact input drop-outs and mode flapping this shim exists to prevent.
+
+By reporting `413080` (the desktop configuration AppID) directly, the shim lands Steam Input in the exact final state used by the native X11 path in a single IPC call. This ID is not hardcoded; the shim reads it dynamically from the client's own internal app comparison logic.

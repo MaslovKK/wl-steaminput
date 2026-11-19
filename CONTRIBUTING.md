@@ -1,47 +1,53 @@
-The shim stays small: one shared object, libc, libdl, Dobby, wayland headers. If a
-change adds a dependency or assumes something is already loaded, open an issue
-first. The README explains how it works; this file says what must not break.
+# Contributing to `wl-steaminput`
 
-# Rules
+`wl-steaminput` is intentionally minimal: a single shared object linking only against `libc`, `libdl`, `Dobby`, and Wayland protocol headers.
 
-- Never call an address that a pattern scan did not find and a segment check did not
-  confirm. A client update must cause a `waiting for the client` log line, not a
-  crash.
-- A pattern must match exactly once. When several places match, pass a predicate
-  that picks ours and say why it picks the right one.
-- Check every new pattern against both client libraries: `linux64/steamclient.so`
-  and `steamrt64/steamclient.so`. Every install has both files.
-- Builder patterns have a fixed `$` group order, read by the code that consumes them
-  (0 = connection accessor, 5 = call table). Change the pattern and the consumer
-  together.
-- Focus reports: the game's app id when one of its windows is activated, the desktop
-  config app id when none is. Reporting zero or the client's internal desktop id
-  (202355) stops the client's input polling; see the comment in
-  `src/steam/steam.cpp`.
-- Struct layouts (`CUtlLinkedList`, pipe records, `CallContext`) are the client's.
-  Change one only against a library you have disassembled.
+If a proposed change introduces a new dependency or assumes a library is already loaded at startup, **open an issue first** to discuss it. For architectural context, see [README.md](README.md) and [HOWITWORKS.md](HOWITWORKS.md); this document defines the invariants and standards that contributions must preserve.
 
-# Style
+---
 
-C++23, Allman braces, four-space indent, `g_camel` globals, `kCamelCase` constants,
-client names for client types (`m_` fields, `__vftable`). Comment only the
-non-obvious reason; delete comments that restate the line below them.
+## Core Invariants
 
-# Testing
+* **Fail-Safe Address Resolution:** Never read from or jump to an address that a pattern scan did not locate and a memory segment bounds-check did not confirm. If a Steam client update moves a symbol, the shim must gracefully degrade to a `waiting for the client` log line—never a segmentation fault.
+* **Unique Pattern Matching:** Every byte pattern must match **exactly once**. If a signature matches multiple locations, supply a disambiguating predicate and document *why* it selects the target site.
+* **Dual-Binary Verification:** Validate every new or modified pattern against both `linux64/steamclient.so` and `steamrt64/steamclient.so` (both binaries are present in every standard Steam installation).
+* **Capture Group Ordering:** Builder patterns use a fixed `$` capture-group order consumed directly by the resolver (`0` = connection accessor, `5` = call table). Always update the pattern and its consumer in lockstep.
+* **Focus Report AppIDs:** Report the game's AppID while any of its windows is active, and the desktop controller configuration AppID (`413080`) when none are active. Never report `0` or Steam's internal desktop AppID (`202355`), as doing so suspends Steam Input polling (see comments in `src/steam/steam.cpp`).
+* **Client Struct Layouts:** Definitions such as `CUtlLinkedList`, pipe records, and `CallContext` mirror Valve's internal binary layouts. Modify them only after verifying against a disassembled `steamclient.so` binary.
 
-No unit test; run a real client. Dota 2 (native Wayland) and a Proton game with
-`PROTON_USE_WAYLAND=1`, both with `WLSTEAMINPUT_DEBUG=1`, then read
-`~/.local/share/Steam/logs/console-linux.txt` and expect:
+---
 
-- one `found` line naming senders, table, builder and desktop config app;
-- `toplevel activated/deactivated` on every window change;
-- `SetFocusedWindow(<game app id>)` on activation and `SetFocusedWindow(413080)` on
-  deactivation.
+## Code Style
 
-If your change touches patterns, repeat on a game that maps the runtime library.
+* **Standard & Formatting:** C++23, Allman brace style, 4-space indentation.
+* **Naming Conventions:**
+  * Globals: `g_camelCase`
+  * Constants: `kCamelCase`
+  * Reversed Steam client types: Retain Valve's original naming conventions (e.g., `m_` member prefixes, `__vftable`).
 
-# Commits
 
-Conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `build:`, `test:`,
-`chore:`. Imperative description, the reason in the body, one change per commit.
-GPL-3.0-or-later like everything here; you keep copyright of what you contribute.
+* **Comments:** Document *why* non-obvious behavior exists (especially around ABI quirks or IPC workarounds). Remove comments that merely restate what the code immediately below already expresses.
+
+---
+
+## Testing & Verification
+
+Because the shim relies on runtime dynamic linking and live Steam IPC pipes, changes are verified directly against real games rather than mocked unit tests.
+
+1. Launch **both** a native Wayland game (e.g., Dota 2) and a Proton title running with `PROTON_USE_WAYLAND=1`.
+2. Set `WLSTEAMINPUT_DEBUG=1` in the launch options for both games.
+3. Inspect `~/.local/share/Steam/logs/console-linux.txt` and verify:
+* A single `found` line identifying the senders, call table, builder, and desktop configuration AppID.
+* `toplevel activated` and `toplevel deactivated` entries firing reliably on every window focus change.
+* `SetFocusedWindow(<game_app_id>)` on window activation and `SetFocusedWindow(413080)` on deactivation.
+
+
+
+> **Pattern Changes:** If your PR modifies byte signatures, you must verify on a game that maps `steamrt64/steamclient.so` (Steam Linux Runtime) in addition to `linux64/steamclient.so`.
+
+---
+
+## Commits & Licensing
+
+* **Commit Format:** Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `refactor:`, `build:`, `test:`, `chore:`). Keep commits atomic (one logical change per commit), use an imperative subject line, and explain the *reason* for the change in the commit body.
+* **License:** All contributions are licensed under **GPL-3.0-or-later** to match the rest of the repository. Contributors retain copyright over their original work.

@@ -1,85 +1,117 @@
 # wl-steaminput
 
-![license](https://img.shields.io/badge/license-GPL3-blue)
-![platform](https://img.shields.io/badge/platform-Linux-lightgrey)
+Fixes Steam Input for native Wayland and `wine-wayland` games on Linux.
 
-Your controller stops working when you play Steam games on Wayland — the
-bindings you set in Steam actuate the desktop instead of the game, no matter
-what the game settings say. This is a Wayland gap in Steam itself, not a driver
-problem, and it is fixable with one launch option.
+When you run a game directly on Wayland (without XWayland), Steam cannot detect when the game window is focused. As a result, Steam Input keeps your controller bound to your desktop configuration instead of switching to your game's profile—an issue open since 2021 ([ValveSoftware/steam-for-linux#8020](https://github.com/ValveSoftware/steam-for-linux/issues/8020)).
 
-## Fix your game
+`wl-steaminput` is a lightweight, compositor-agnostic `LD_PRELOAD` shim that bridges window focus from the game's Wayland connection directly to the Steam client.
 
-1. Build the shim:
+---
 
-       cmake -B build
-       cmake --build build -j
+## Do You Need This?
 
-   The result is `build/libwlsteaminput.so`.
+* **Native Wayland games or Proton with `PROTON_USE_WAYLAND=1`:** **Yes.** If your controller inputs are triggering desktop actions while in-game, this fixes it.
+* **Default Proton (XWayland):** **No.** Games running as X11 windows through XWayland already report focus to Steam natively.
+* **Steam Deck / Gamescope:** **No.** Gamescope manages and reports window focus to Steam itself.
+* **Desktop Environment / Compositor:** Works on **all** Wayland compositors (KDE Plasma, GNOME, Hyprland, Sway, etc.) without compositor-specific extensions.
 
-2. Steam → your game → Properties → Launch Options:
+---
 
-       LD_PRELOAD=/absolute/path/to/libwlsteaminput.so %command%
+## Quickstart
 
-   Proton games played through `PROTON_USE_WAYLAND=1` need that variable in the
-   same line, before `%command%`.
+### 1. Download or Build
 
-3. Play. The controller works in the game and goes back to the desktop when you
-   alt-tab. Native Wayland games and Proton ones both work; Steam itself does
-   not need restarting, the next game launch picks it up.
+Grab the prebuilt `libwlsteaminput.so` from the [latest release](https://github.com/MaslovKK/wl-steaminput/releases/latest), or build it from source:
 
-Works under any Wayland compositor. On the Steam Deck you do not need this:
-gamescope reports focus to the client itself.
+```bash
+cmake -B build
+cmake --build build -j
+```
 
-## Optional knobs
+### 2. Add to Steam Launch Options
 
-| Put in Launch Options | Effect |
-|---|---|
-| `WLSTEAMINPUT_DISABLE=1` | the shim loads and does nothing |
-| `WLSTEAMINPUT_DEBUG=1` | a `wl-steaminput:` line per step, in the game's log |
+Open Steam, right-click your game, go to **Properties → General → Launch Options**, and add:
 
-The game's log is `~/.local/share/Steam/logs/console-linux.txt`: a
-`waiting for the client:` line is the shim still loading what it needs, not an
-error; a `SetFocusedWindow(...)` line is a focus report actually delivered.
-[Reading the trace](HOWITWORKS.md#reading-the-trace) explains every line.
+```bash
+LD_PRELOAD=/absolute/path/to/libwlsteaminput.so %command%
+```
 
-## Games with anti-cheat
+> **Note:** If you are using `PROTON_USE_WAYLAND=1`, ensure both variables appear before `%command%`:
+> ```bash
+> PROTON_USE_WAYLAND=1 LD_PRELOAD=/absolute/path/to/libwlsteaminput.so %command%
+> ```
+>
+>
 
-The fix works by living inside the game process and hooking its library loader —
-which is precisely what third-party anti-cheat looks at. Single-player and
-co-op games are fine; nothing reads the process but Steam. In online games with
-Easy Anti-Cheat, BattlEye or similar, an unexpected preloaded library in the
-game can be flagged or is against the terms — if the account matters, leave
-those games alone; they also tend to run X11 and need no help anyway.
+### 3. Launch and Play
 
-## The overlay (Shift+Tab)
+No Steam restart is required. Your controller will switch to the game's profile on focus and revert to desktop bindings when you Alt+Tab out.
 
-Not this shim's business, and it cannot be: the overlay needs an X11 window
-inside the game, which a Wayland game does not have — Valve's own gap, open
-since 2021 ([#8020](https://github.com/ValveSoftware/steam-for-linux/issues/8020),
-[#11818](https://github.com/ValveSoftware/steam-for-linux/issues/11818)). In
-practice:
+---
 
-- **Play X11** (`SDL_VIDEO_DRIVER=x11` launch option, runs on XWayland): overlay
-  works, there Steam already sees the focus itself and this shim is not needed.
-- **Play Wayland**: controller works through this shim, overlay does not — on
-  any setup except a full gamescope session, where the compositor implements
-  the overlay itself.
+## Environment Variables
 
-## How it works
+You can pass optional configuration variables in your game's Launch Options before `%command%`:
 
-Short version: the shim watches the game window's focus through the game's own
-Wayland connection and tells the Steam client over the game's own Steam pipe —
-the two channels a Wayland game actually has, which Valve's focus tracking
-listens to on X11 and nobody feeds on Wayland. The
-[full account](HOWITWORKS.md) covers why that is the only channel there is, how
-it survives Steam updates, and what every trace line means.
+| Variable | Effect |
+| --- | --- |
+| `WLSTEAMINPUT_DISABLE=1` | Loads the library as a no-op (useful for testing without altering paths). |
+| `WLSTEAMINPUT_DEBUG=1` | Prints step-by-step trace logs (`wl-steaminput: ...`) to Steam's console log. |
 
-# Contributing
+### Reading Logs
 
-The invariants, the style and the real-client test a change must show:
-[CONTRIBUTING.md](CONTRIBUTING.md).
+Debug output is written to `~/.local/share/Steam/logs/console-linux.txt`:
 
-# License
+* `waiting for the client:` — Normal startup behavior while the shim waits for the Steam client API to initialize.
+* `SetFocusedWindow(...)` — Confirms a focus state change was successfully sent to Steam.
 
-GPL-3.0-or-later. Dobby, fetched at build time, carries its own license.
+For a complete breakdown of log lines, see [Reading the trace](HOWITWORKS.md#reading-the-trace-log).
+
+---
+
+## Anti-Cheat Warning
+
+> **⚠️ Do not use this shim with kernel or user-space anti-cheat systems.**
+
+`wl-steaminput` injects into the game process and hooks dynamic library loading—behavior that anti-cheat software explicitly flags.
+
+* **Safe:** Single-player games, local co-op, and peer-to-peer games without anti-cheat.
+* **Unsafe:** Online multiplayer games protected by Easy Anti-Cheat (EAC), BattlEye, or similar systems. Preloading unauthorized `.so` libraries violates terms of service and risks account bans (most of these titles run under XWayland anyway and do not need this fix).
+
+---
+
+## Known Limitation: The Steam Overlay (`Shift+Tab`)
+
+Window focus and the Steam Overlay are separate issues on Wayland ([steam-for-linux#8020](https://github.com/ValveSoftware/steam-for-linux/issues/8020), [#11818](https://github.com/ValveSoftware/steam-for-linux/issues/11818)). The Steam Overlay composites onto an X11 window inside the game process, which pure Wayland windows lack.
+
+* **Native Wayland / `PROTON_USE_WAYLAND=1`:** Steam Input works via this shim, **but the Steam Overlay will not open** (unless running inside a nested Gamescope session, which renders the overlay itself).
+* **XWayland (`SDL_VIDEO_DRIVER=x11`):** Both the Steam Overlay and Steam Input work natively without this shim.
+
+---
+
+## Comparison with Other Tools
+
+Different tools in the ecosystem solve different parts of Wayland input and overlay support:
+
+| Tool | Wayland Focus Fix | `wine-wayland` Overlay | Requirements & Caveats |
+| --- | --- | --- | --- |
+| **wl-steaminput** | Native + All Proton | No | Single `LD_PRELOAD` launch option; survives Steam updates via pattern scanning. |
+| **[GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom)** (`overlay_bridge`) | `wine-wayland` only | Yes | Requires GE-Proton; tied to specific `steamclient` build IDs and breaks on unapproved Steam updates. |
+| **[extest](https://github.com/Supreeeme/extest)** | No (X11/desktop input translation only) | No | Must be preloaded onto the Steam client itself. |
+
+*Note: GE-Proton's `overlay_bridge` targets the exact same internal `SetFocusedWindow` IPC call, independently confirming this approach. Unlike GE-Proton's allowlisted offsets, `wl-steaminput` uses signature pattern scanning so Steam client updates won't break your controller.*
+
+---
+
+## How It Works
+
+A Wayland game communicates with two separate systems: the Wayland compositor (for display and window events) and the Steam client (via local IPC pipes). On X11, Steam monitors window focus directly; on Wayland, nothing bridges these two channels.
+
+`wl-steaminput` hooks into the game's Wayland connection to listen for surface focus events and forwards them over the game's existing Steam IPC pipe. For a deep dive into the architecture, signature scanning, and IPC internals, read [HOWITWORKS.md](HOWITWORKS.md).
+
+---
+
+## Contributing & License
+
+* **Contributing:** See [CONTRIBUTING.md](CONTRIBUTING.md) for code invariants, style guidelines, and required real-client test criteria.
+* **License:** [GPL-3.0-or-later](LICENSE). `Dobby` (fetched at build time) is subject to its own license terms.
